@@ -98,7 +98,7 @@ class MLService:
         t = np.clip((w["temperature_max"] - 10) / 35, 0, 1)
         dry = np.clip((80 - w["humidity_min"]) / 80, 0, 1)
         wind = np.clip(w["wind_speed_max"] / 60, 0, 1)
-        nodry = np.clip(1 - w["precipitation_sum"] / 30, 0, 1)
+        nodry = np.clip(1 - w["precipitation_sum"] / 100, 0, 1)
         return float(np.clip(0.35 * t + 0.3 * dry + 0.2 * wind + 0.15 * nodry, 0, 1))
 
     def run_inference(self):
@@ -111,16 +111,20 @@ class MLService:
             rows.append([feats[k] for k in self.features])
             meta.append((c, feats, w))
 
+        physics_probs = [self._physics_score(w) for _, _, w in meta]
         if self.model is not None and rows:
             try:
                 import pandas as pd
                 X = pd.DataFrame(rows, columns=self.features)
-                base_probs = self.model.predict_proba(X)[:, 1]
+                ml_probs = self.model.predict_proba(X)[:, 1]
+                # take the higher of ML and physics so current weather always drives
+                # a visible geographic gradient even when the seasonal ML signal is weak
+                base_probs = [max(float(ml), phys) for ml, phys in zip(ml_probs, physics_probs)]
             except Exception as e:
                 logger.warning("predict failed (%s); physics fallback", e)
-                base_probs = [self._physics_score(w) for _, _, w in meta]
+                base_probs = physics_probs
         else:
-            base_probs = [self._physics_score(w) for _, _, w in meta]
+            base_probs = physics_probs
 
         results = {}
         for (c, feats, w), base in zip(meta, base_probs):
