@@ -11,7 +11,7 @@ logger = logging.getLogger("hex_service")
 RES_COARSE = 4   # ML inference + live-weather granularity (a few thousand cells)
 RES_FINE = 5     # the single fixed display resolution (~252 km²/hex, ~30k cells);
                  # fine cells inherit their res-4 parent's risk/weather values
-RES_WEATHER = 3  # weather fetched at this resolution; finer hexes map to res-3 parent
+RES_WEATHER = 2  # weather fetched at this resolution; finer hexes map to res-2 parent
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOUNDARY_PATH = os.path.join(_BASE, "data", "australia_boundary.geojson")
