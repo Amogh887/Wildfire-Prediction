@@ -6,14 +6,21 @@ from datetime import datetime, timezone
 
 import h3
 import requests
+from requests.adapters import HTTPAdapter
 
 from services.hex_service import grid, RES_WEATHER
 
 logger = logging.getLogger("weather_service")
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-BATCH_SIZE = 100         # Open-Meteo accepts comma-separated coords per request
+BATCH_SIZE = 50          # Open-Meteo accepts comma-separated coords per request
 MAX_WEATHER_CELLS = 800  # safety cap on startup
+
+_session = requests.Session()
+_session.headers.update({"User-Agent": "wildfire-prediction-app/1.0 contact:aarao22@wisc.edu"})
+_adapter = HTTPAdapter(max_retries=0, pool_connections=4, pool_maxsize=8)
+_session.mount("https://", _adapter)
+_session.mount("http://", _adapter)
 
 # default values if a fetch fails — deliberately neutral (cool, humid, wet) so that
 # cells with missing weather don't generate false fire alerts.
@@ -48,7 +55,7 @@ class WeatherCache:
             "past_days": 30,
             "forecast_days": 1,
         }
-        r = requests.get(FORECAST_URL, params=params, timeout=60)
+        r = _session.get(FORECAST_URL, params=params, timeout=90)
         r.raise_for_status()
         data = r.json()
         # single point returns dict, multiple returns list
@@ -115,7 +122,7 @@ class WeatherCache:
                 # overwrites real data with neutral defaults (which would show as 36%).
                 for c in batch:
                     result[c] = self.by_cell.get(c, dict(_DEFAULT))
-            time.sleep(1.0)
+            time.sleep(2.0)
         if n_ok > 0:
             self.by_cell = result
             self.updated_at = datetime.now(timezone.utc)
