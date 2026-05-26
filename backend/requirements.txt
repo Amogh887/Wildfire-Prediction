@@ -9,3 +9,4 @@ numpy
 requests
 apscheduler
 kagglehub
+python-dotenv

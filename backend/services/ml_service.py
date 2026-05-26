@@ -129,8 +129,10 @@ class MLService:
             # live modifiers
             if w["temperature_max"] > 38 and w["humidity_min"] < 15 and w["wind_speed_max"] > 50:
                 prob *= 1.8
-            if fires > 0:
+            if fires >= 2:
                 prob = max(prob, 0.9)
+            elif fires == 1:
+                prob = max(prob, 0.7)
             prob = float(np.clip(prob, 0.0, 1.0))
             lat, lon = grid.centroid(c)
             results[c] = {

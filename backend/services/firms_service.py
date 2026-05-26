@@ -72,14 +72,6 @@ class FirmsCache:
                     except Exception:
                         continue
                     counts[cell] = counts.get(cell, 0) + 1
-                    # spill into immediate neighbors so adjacent hexes register risk
-                    for nb in h3.grid_disk(cell, 1):
-                        if nb != cell:
-                            counts[nb] = counts.get(nb, 0)  # ensure key, count via max later
-            # apply neighbor influence: a cell with a fire neighbor gets >=1
-            for cell in list(counts.keys()):
-                if counts[cell] == 0:
-                    counts[cell] = 1
             self.fires_by_cell = counts
             self.updated_at = datetime.now(timezone.utc)
             logger.info("FIRMS: %d hotspot rows -> %d affected cells", len(df), len(counts))

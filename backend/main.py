@@ -3,6 +3,9 @@ weather + FIRMS, runs inference, and schedules periodic refreshes."""
 import logging
 import threading
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

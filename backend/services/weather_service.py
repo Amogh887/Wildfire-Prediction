@@ -15,11 +15,12 @@ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 BATCH_SIZE = 100         # Open-Meteo accepts comma-separated coords per request
 MAX_WEATHER_CELLS = 800  # safety cap on startup
 
-# default values if a fetch fails
+# default values if a fetch fails — deliberately neutral (cool, humid, wet) so that
+# cells with missing weather don't generate false fire alerts.
 _DEFAULT = {
-    "temperature": 25.0, "humidity": 50.0, "wind_speed": 10.0, "precipitation": 0.0,
-    "temperature_max": 28.0, "humidity_min": 40.0, "wind_speed_max": 15.0,
-    "precipitation_sum": 0.0,
+    "temperature": 20.0, "humidity": 60.0, "wind_speed": 10.0, "precipitation": 0.0,
+    "temperature_max": 22.0, "humidity_min": 55.0, "wind_speed_max": 12.0,
+    "precipitation_sum": 30.0,
 }
 
 
@@ -41,6 +42,8 @@ class WeatherCache:
             "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation",
             "daily": "temperature_2m_max,relative_humidity_2m_min,wind_speed_10m_max,precipitation_sum",
             "timezone": "auto",
+            "past_days": 30,
+            "forecast_days": 1,
         }
         r = requests.get(FORECAST_URL, params=params, timeout=60)
         r.raise_for_status()
@@ -53,21 +56,15 @@ class WeatherCache:
             cur = entry.get("current", {}) or {}
             daily = entry.get("daily", {}) or {}
 
-            def first(key, default):
-                v = daily.get(key)
-                if isinstance(v, list) and v:
-                    return v[0] if v[0] is not None else default
-                return default
-
             out[cell] = {
                 "temperature": _num(cur.get("temperature_2m"), _DEFAULT["temperature"]),
                 "humidity": _num(cur.get("relative_humidity_2m"), _DEFAULT["humidity"]),
                 "wind_speed": _num(cur.get("wind_speed_10m"), _DEFAULT["wind_speed"]),
                 "precipitation": _num(cur.get("precipitation"), _DEFAULT["precipitation"]),
-                "temperature_max": _num(first("temperature_2m_max", None), _DEFAULT["temperature_max"]),
-                "humidity_min": _num(first("relative_humidity_2m_min", None), _DEFAULT["humidity_min"]),
-                "wind_speed_max": _num(first("wind_speed_10m_max", None), _DEFAULT["wind_speed_max"]),
-                "precipitation_sum": _num(first("precipitation_sum", None), _DEFAULT["precipitation_sum"]),
+                "temperature_max": _num(_last_val(daily.get("temperature_2m_max"), None), _DEFAULT["temperature_max"]),
+                "humidity_min": _num(_last_val(daily.get("relative_humidity_2m_min"), None), _DEFAULT["humidity_min"]),
+                "wind_speed_max": _num(_last_val(daily.get("wind_speed_10m_max"), None), _DEFAULT["wind_speed_max"]),
+                "precipitation_sum": _num(_sum_vals(daily.get("precipitation_sum", [])[:30], None), _DEFAULT["precipitation_sum"]),
             }
         return out
 
@@ -99,6 +96,24 @@ class WeatherCache:
         res = h3.get_resolution(cell)
         wcell = cell if res == RES_WEATHER else h3.cell_to_parent(cell, RES_WEATHER)
         return self.by_cell.get(wcell, dict(_DEFAULT))
+
+
+def _last_val(lst, default):
+    """Return the last non-None element of a list, or default if none exists."""
+    if isinstance(lst, list):
+        for v in reversed(lst):
+            if v is not None:
+                return v
+    return default
+
+
+def _sum_vals(lst, default):
+    """Sum all non-None elements of a list; return default if the list is empty or all None."""
+    if isinstance(lst, list):
+        values = [v for v in lst if v is not None]
+        if values:
+            return sum(values)
+    return default
 
 
 def _num(v, default):

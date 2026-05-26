@@ -1,8 +1,10 @@
 """Train an XGBoost wildfire-probability model.
 
-Data path 1 (preferred): Kaggle dataset
-  carlosparadis/fires-from-space-australia-and-new-zeland via kagglehub.
-Data path 2 (fallback): synthetic but realistic fire/non-fire samples across Australia,
+Data path 1 (preferred): Kaggle dataset + ERA5 real weather
+  carlosparadis/fires-from-space-australia-and-new-zeland via kagglehub,
+  with actual meteorological data from the Open-Meteo ERA5 archive.
+Data path 2 (fallback): Kaggle dataset with synthetic weather features.
+Data path 3 (fallback): synthetic but realistic fire/non-fire samples across Australia,
   weighted toward known fire-prone regions.
 
 Features (must match ml_service.FEATURE_COLUMNS):
@@ -12,9 +14,13 @@ Features (must match ml_service.FEATURE_COLUMNS):
 import logging
 import os
 import pickle
+import time
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import requests
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("train")
@@ -179,15 +185,275 @@ def _build_synthetic(n_per_class: int = 4000) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_from_kaggle_real_weather(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Build training data using Kaggle fire locations + real ERA5 weather.
+
+    Returns a DataFrame with FEATURE_COLUMNS + 'label', or None on failure.
+    """
+    import h3
+
+    # --- 1. Extract lat / lon / date columns ---
+    latcol = next((c for c in df.columns if c.lower() in ("latitude", "lat")), None)
+    loncol = next((c for c in df.columns if c.lower() in ("longitude", "lon", "long")), None)
+    datecol = next((c for c in df.columns if c.lower() in ("acq_date", "date")), None)
+    if not latcol or not loncol:
+        logger.warning("ERA5 path: missing lat/lon columns")
+        return None
+
+    sub = df[[latcol, loncol] + ([datecol] if datecol else [])].copy()
+    sub = sub.dropna(subset=[latcol, loncol])
+    # Keep Australia bounding box
+    sub = sub[(sub[latcol].between(-44, -10)) & (sub[loncol].between(112, 154))]
+    if len(sub) < 100:
+        logger.warning("ERA5 path: too few rows after bbox filter (%d)", len(sub))
+        return None
+
+    # --- 2. Map each fire point to H3 res-4 cell; track most-common fire month ---
+    cell_months: dict[str, list[int]] = defaultdict(list)
+    cell_coords: dict[str, tuple[float, float]] = {}
+
+    for row in sub.itertuples(index=False):
+        lat = float(getattr(row, latcol))
+        lon = float(getattr(row, loncol))
+        try:
+            cell = h3.latlng_to_cell(lat, lon, 4)
+        except Exception:
+            continue
+        cell_coords[cell] = (lat, lon)
+        if datecol:
+            raw_date = getattr(row, datecol)
+            try:
+                m = pd.to_datetime(raw_date).month
+                cell_months[cell].append(m)
+            except Exception:
+                pass
+
+    pos_cells = list(cell_coords.keys())
+    logger.info("ERA5 path: %d unique res-4 positive cells", len(pos_cells))
+
+    # --- 3. Cap at 500 positive cells ---
+    if len(pos_cells) > 500:
+        rng_seed = np.random.default_rng(42)
+        pos_cells = list(rng_seed.choice(pos_cells, size=500, replace=False))
+
+    # Determine most-common fire month per cell
+    def _most_common_month(cell: str) -> int:
+        months = cell_months.get(cell, [])
+        if not months:
+            return 1  # default January if no date info
+        counts: dict[int, int] = defaultdict(int)
+        for m in months:
+            counts[m] += 1
+        return max(counts, key=lambda k: counts[k])
+
+    cell_fire_month = {c: _most_common_month(c) for c in pos_cells}
+
+    # --- 4. Group by fire month; determine ERA5 window ---
+    today = date.today()
+    era5_cutoff = today - timedelta(days=7)
+
+    def _era5_window(month: int, rep_year: int) -> tuple[str, str]:
+        end_dt = date(rep_year, month, 28)
+        start_dt = end_dt - timedelta(days=29)
+        end_dt = min(end_dt, era5_cutoff)
+        start_dt = min(start_dt, era5_cutoff)
+        return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+
+    # Group positive cells by fire month
+    month_to_cells: dict[int, list[str]] = defaultdict(list)
+    for cell in pos_cells:
+        month_to_cells[cell_fire_month[cell]].append(cell)
+
+    # --- 5 & 6. Fetch ERA5 in batches of 50; extract features ---
+    ERA5_URL = "https://archive-api.open-meteo.com/v1/era5"
+    BATCH_SIZE = 50
+
+    def _fetch_era5_batch(
+        lats: list[float], lons: list[float], start: str, end: str
+    ) -> list[dict | None]:
+        params = {
+            "latitude": ",".join(f"{v:.4f}" for v in lats),
+            "longitude": ",".join(f"{v:.4f}" for v in lons),
+            "daily": "temperature_2m_max,relative_humidity_2m_min,wind_speed_10m_max,precipitation_sum",
+            "start_date": start,
+            "end_date": end,
+            "timezone": "UTC",
+        }
+        try:
+            resp = requests.get(ERA5_URL, params=params, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            # Single coord → dict; multiple → list
+            if isinstance(data, dict):
+                data = [data]
+            return data
+        except Exception as exc:
+            logger.warning("ERA5 fetch failed (%s); skipping batch", exc)
+            return [None] * len(lats)
+
+    def _extract_weather(entry: dict) -> dict | None:
+        if entry is None:
+            return None
+        daily = entry.get("daily", {})
+        t_vals = [v for v in (daily.get("temperature_2m_max") or []) if v is not None]
+        h_vals = [v for v in (daily.get("relative_humidity_2m_min") or []) if v is not None]
+        w_vals = [v for v in (daily.get("wind_speed_10m_max") or []) if v is not None]
+        p_vals = [v for v in (daily.get("precipitation_sum") or []) if v is not None]
+        # Fall back to reasonable defaults if all values are missing
+        temp_max = max(t_vals) if t_vals else 30.0
+        hum_min = min(h_vals) if h_vals else 20.0
+        wind_max = max(w_vals) if w_vals else 25.0
+        precip_30d = sum(p_vals) if p_vals else 5.0
+        return {
+            "temperature_max": float(temp_max),
+            "relative_humidity_min": float(hum_min),
+            "wind_speed_max": float(wind_max),
+            "precipitation_30d": float(precip_30d),
+        }
+
+    # Fetch weather for all positive cells
+    cell_weather: dict[str, dict] = {}
+
+    for month, cells_in_month in month_to_cells.items():
+        rep_year = 2020 if month <= 9 else 2019
+        start_str, end_str = _era5_window(month, rep_year)
+        logger.info(
+            "ERA5 positive: month=%d rep_year=%d window=%s..%s cells=%d",
+            month, rep_year, start_str, end_str, len(cells_in_month),
+        )
+        for i in range(0, len(cells_in_month), BATCH_SIZE):
+            batch_cells = cells_in_month[i: i + BATCH_SIZE]
+            lats = [h3.cell_to_latlng(c)[0] for c in batch_cells]
+            lons = [h3.cell_to_latlng(c)[1] for c in batch_cells]
+            results = _fetch_era5_batch(lats, lons, start_str, end_str)
+            for cell, entry in zip(batch_cells, results):
+                w = _extract_weather(entry)
+                if w is not None:
+                    cell_weather[cell] = w
+            time.sleep(0.5)
+
+    # --- 7. Build positive rows ---
+    rows = []
+    for cell in pos_cells:
+        w = cell_weather.get(cell)
+        if w is None:
+            continue  # batch failed; skip
+        lat, lon = h3.cell_to_latlng(cell)
+        precip = w["precipitation_30d"]
+        ndvi_proxy = float(np.clip(0.3 + min(precip, 100) / 250.0, 0.05, 0.9))
+        fire_freq = _region_fire_weight(lat, lon)
+        drought_index = w["temperature_max"] / (precip + 1.0)
+        month = cell_fire_month[cell]
+        rows.append({
+            "temperature_max": w["temperature_max"],
+            "relative_humidity_min": w["relative_humidity_min"],
+            "wind_speed_max": w["wind_speed_max"],
+            "precipitation_30d": precip,
+            "ndvi_proxy": ndvi_proxy,
+            "fire_freq_historical": float(fire_freq),
+            "month": month,
+            "drought_index": float(drought_index),
+            "label": 1,
+        })
+
+    n_pos = len(rows)
+    logger.info("ERA5 path: %d positive rows built", n_pos)
+    if n_pos < 50:
+        logger.warning("ERA5 path: too few positives (%d < 50); giving up", n_pos)
+        return None
+
+    # --- 8. Build negative rows ---
+    pos_cell_set = set(pos_cells)
+    rng = np.random.default_rng(99)
+    neg_cells: list[str] = []
+    while len(neg_cells) < n_pos:
+        lat = rng.uniform(-44, -10)
+        lon = rng.uniform(112, 154)
+        try:
+            c = h3.latlng_to_cell(lat, lon, 4)
+        except Exception:
+            continue
+        if c not in pos_cell_set and c not in {nc for nc in neg_cells}:
+            neg_cells.append(c)
+
+    winter_months = [5, 6, 7, 8]  # Australian winter — low fire risk
+    neg_month_groups: dict[int, list[str]] = defaultdict(list)
+    for idx, c in enumerate(neg_cells):
+        neg_month_groups[winter_months[idx % len(winter_months)]].append(c)
+
+    neg_cell_weather: dict[str, dict] = {}
+    for month, cells_in_month in neg_month_groups.items():
+        start_str, end_str = _era5_window(month, 2020)
+        logger.info(
+            "ERA5 negative: month=%d window=%s..%s cells=%d",
+            month, start_str, end_str, len(cells_in_month),
+        )
+        for i in range(0, len(cells_in_month), BATCH_SIZE):
+            batch_cells = cells_in_month[i: i + BATCH_SIZE]
+            lats = [h3.cell_to_latlng(c)[0] for c in batch_cells]
+            lons = [h3.cell_to_latlng(c)[1] for c in batch_cells]
+            results = _fetch_era5_batch(lats, lons, start_str, end_str)
+            for cell, entry in zip(batch_cells, results):
+                w = _extract_weather(entry)
+                if w is not None:
+                    neg_cell_weather[cell] = w
+            time.sleep(0.5)
+
+    for cell in neg_cells:
+        w = neg_cell_weather.get(cell)
+        if w is None:
+            continue
+        lat, lon = h3.cell_to_latlng(cell)
+        precip = w["precipitation_30d"]
+        ndvi_proxy = float(np.clip(0.3 + min(precip, 100) / 250.0, 0.05, 0.9))
+        fire_freq = _region_fire_weight(lat, lon)
+        drought_index = w["temperature_max"] / (precip + 1.0)
+        # Assign the month used for ERA5 fetch
+        assigned_month = next(
+            (m for m, cs in neg_month_groups.items() if cell in cs), 6
+        )
+        rows.append({
+            "temperature_max": w["temperature_max"],
+            "relative_humidity_min": w["relative_humidity_min"],
+            "wind_speed_max": w["wind_speed_max"],
+            "precipitation_30d": precip,
+            "ndvi_proxy": ndvi_proxy,
+            "fire_freq_historical": float(fire_freq),
+            "month": assigned_month,
+            "drought_index": float(drought_index),
+            "label": 0,
+        })
+
+    result = pd.DataFrame(rows)
+    logger.info(
+        "ERA5 path complete: %d total rows (%d pos, %d neg)",
+        len(result),
+        int((result["label"] == 1).sum()),
+        int((result["label"] == 0).sum()),
+    )
+    # --- 9. Return None if fewer than 50 positive rows ---
+    if int((result["label"] == 1).sum()) < 50:
+        return None
+    return result
+
+
 def main():
     source = "synthetic"
     df = None
     kdf = _try_kaggle()
     if kdf is not None:
-        built = _build_from_kaggle(kdf)
-        if built is not None and len(built) > 200:
-            df = built
-            source = "kaggle"
+        # Try ERA5 real-weather path first
+        era5_df = _build_from_kaggle_real_weather(kdf)
+        if era5_df is not None and len(era5_df) >= 100:
+            df = era5_df
+            source = "kaggle+era5"
+            logger.info("Using Kaggle + ERA5 real weather data (%d rows)", len(df))
+        else:
+            logger.info("ERA5 path unavailable; falling back to synthetic Kaggle features")
+            built = _build_from_kaggle(kdf)
+            if built is not None and len(built) > 200:
+                df = built
+                source = "kaggle"
     if df is None:
         df = _build_synthetic()
 
