@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import api
 from services.hex_service import grid
 from services.ml_service import service as ml
-from services import weather_service, firms_service
+from services import weather_service, firms_service, aus_fires_service
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -49,10 +49,19 @@ def refresh_firms():
         logger.exception("FIRMS refresh failed")
 
 
+def refresh_aus_fires():
+    try:
+        aus_fires_service.cache.refresh()
+        ml.run_inference()
+    except Exception:
+        logger.exception("AUS fires refresh failed")
+
+
 def initial_load():
     """Run the first data fetch + inference (in background so startup is fast)."""
     try:
         firms_service.cache.refresh()
+        aus_fires_service.cache.refresh()
         weather_service.cache.refresh()
         ml.run_inference()
         logger.info("Initial data load complete")
@@ -64,6 +73,7 @@ def initial_load():
 def startup():
     grid.build()
     ml.load()
+    ml.load_snapshot()
     # serve immediately with a quick physics pass over empty weather so endpoints work,
     # then kick the real fetch off in the background.
     try:
@@ -74,6 +84,7 @@ def startup():
 
     scheduler.add_job(refresh_weather, "interval", minutes=15, id="weather")
     scheduler.add_job(refresh_firms, "interval", minutes=30, id="firms")
+    scheduler.add_job(refresh_aus_fires, "interval", minutes=15, id="aus_fires")
     scheduler.start()
     logger.info("Startup complete; scheduler running")
 

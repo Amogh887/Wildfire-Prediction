@@ -11,12 +11,13 @@ import h3
 import numpy as np
 
 from services.hex_service import grid, RES_COARSE
-from services import weather_service, firms_service
+from services import weather_service, firms_service, aus_fires_service
 
 logger = logging.getLogger("ml_service")
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(_BASE, "data", "wildfire_model.pkl")
+SNAPSHOT_PATH = os.path.join(_BASE, "data", "inference_snapshot.pkl")
 
 FEATURE_COLUMNS = [
     "temperature_max", "relative_humidity_min", "wind_speed_max", "precipitation_30d",
@@ -129,7 +130,7 @@ class MLService:
         results = {}
         for (c, feats, w), base in zip(meta, base_probs):
             prob = float(base)
-            fires = firms_service.cache.fires_for_cell(c)
+            fires = firms_service.cache.fires_for_cell(c) + aus_fires_service.cache.fires_for_cell(c)
             # live modifiers
             if w["temperature_max"] > 38 and w["humidity_min"] < 15 and w["wind_speed_max"] > 50:
                 prob *= 1.8
@@ -153,6 +154,41 @@ class MLService:
         self.results = results
         self.updated_at = datetime.now(timezone.utc)
         logger.info("Inference complete for %d res-%d cells", len(results), RES_COARSE)
+        self.save_snapshot()
+
+    def save_snapshot(self):
+        if not self.results:
+            return
+        try:
+            os.makedirs(os.path.dirname(SNAPSHOT_PATH), exist_ok=True)
+            with open(SNAPSHOT_PATH, "wb") as f:
+                pickle.dump({"results": self.results, "updated_at": self.updated_at}, f)
+            logger.info("Snapshot saved to %s", SNAPSHOT_PATH)
+        except Exception as e:
+            logger.warning("Failed to save snapshot: %s", e)
+
+    def load_snapshot(self, max_age_hours: float = 2) -> bool:
+        if not os.path.exists(SNAPSHOT_PATH):
+            logger.info("No snapshot found at %s (first run)", SNAPSHOT_PATH)
+            return False
+        try:
+            with open(SNAPSHOT_PATH, "rb") as f:
+                snap = pickle.load(f)
+            updated_at = snap.get("updated_at")
+            if updated_at is None:
+                logger.warning("Snapshot missing updated_at; skipping")
+                return False
+            age = (datetime.now(timezone.utc) - updated_at).total_seconds() / 3600
+            if age > max_age_hours:
+                logger.info("Snapshot is %.1f hours old (limit %s h); skipping", age, max_age_hours)
+                return False
+            self.results = snap["results"]
+            self.updated_at = updated_at
+            logger.info("Loaded snapshot with %d cells (age=%.1f h)", len(self.results), age)
+            return True
+        except Exception as e:
+            logger.warning("Failed to load snapshot: %s", e)
+            return False
 
     def hex_payload(self, cell: str) -> dict:
         """Build the API payload for any-resolution cell (fine cells inherit res-4 parent)."""
