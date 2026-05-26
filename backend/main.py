@@ -82,9 +82,9 @@ def startup():
         logger.exception("initial inference failed")
     threading.Thread(target=initial_load, daemon=True).start()
 
-    scheduler.add_job(refresh_weather, "interval", minutes=15, id="weather")
-    scheduler.add_job(refresh_firms, "interval", minutes=30, id="firms")
-    scheduler.add_job(refresh_aus_fires, "interval", minutes=15, id="aus_fires")
+    scheduler.add_job(refresh_weather, "interval", minutes=30, id="weather")
+    scheduler.add_job(refresh_firms, "interval", minutes=60, id="firms")
+    scheduler.add_job(refresh_aus_fires, "interval", minutes=30, id="aus_fires")
     scheduler.start()
     logger.info("Startup complete; scheduler running")
 
