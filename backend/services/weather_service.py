@@ -29,6 +29,9 @@ class WeatherCache:
         # res-3 cell -> weather dict
         self.by_cell: dict[str, dict] = {}
         self.updated_at: datetime | None = None
+        # True once real weather has been fetched at least once; gates snapshot saves
+        # so the startup default-weather pass never persists as "good" data.
+        self.ok = False
 
     def _fetch_batch(self, cells: list[str]) -> dict[str, dict]:
         lats, lons = [], []
@@ -68,6 +71,30 @@ class WeatherCache:
             }
         return out
 
+    def _fetch_batch_retry(self, cells: list[str], max_attempts: int = 4) -> dict | None:
+        """Fetch a batch with exponential backoff. Returns None if all attempts fail.
+        Honors Open-Meteo's Retry-After header on 429 so we self-pace under its rate limit."""
+        delay = 2.0
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self._fetch_batch(cells)
+            except requests.HTTPError as e:
+                status = getattr(e.response, "status_code", None)
+                if status == 429:
+                    ra = e.response.headers.get("Retry-After") if e.response is not None else None
+                    wait = float(ra) if ra and ra.isdigit() else delay
+                    logger.warning("weather 429; backoff %.0fs (attempt %d/%d)", wait, attempt, max_attempts)
+                else:
+                    logger.warning("weather HTTP %s (attempt %d/%d)", status, attempt, max_attempts)
+                    wait = delay
+            except Exception as e:
+                logger.warning("weather batch error %s (attempt %d/%d)", e, attempt, max_attempts)
+                wait = delay
+            if attempt < max_attempts:
+                time.sleep(wait)
+                delay = min(delay * 2, 30)
+        return None
+
     def refresh(self):
         cells = grid.weather_cells()
         if len(cells) > MAX_WEATHER_CELLS:
@@ -75,21 +102,29 @@ class WeatherCache:
             step = len(cells) // MAX_WEATHER_CELLS + 1
             cells = cells[::step]
         result: dict[str, dict] = {}
+        n_ok = n_fail = 0
         for i in range(0, len(cells), BATCH_SIZE):
             batch = cells[i:i + BATCH_SIZE]
-            try:
-                result.update(self._fetch_batch(batch))
-            except Exception as e:
-                logger.warning("weather batch %d failed: %s", i, e)
+            fetched = self._fetch_batch_retry(batch)
+            if fetched is not None:
+                result.update(fetched)
+                n_ok += 1
+            else:
+                n_fail += 1
+                # preserve last-good weather for these cells so a failed batch never
+                # overwrites real data with neutral defaults (which would show as 36%).
                 for c in batch:
-                    result[c] = dict(_DEFAULT)
-            time.sleep(0.3)  # be polite to the free API
-        if result:
+                    result[c] = self.by_cell.get(c, dict(_DEFAULT))
+            time.sleep(1.0)
+        if n_ok > 0:
             self.by_cell = result
             self.updated_at = datetime.now(timezone.utc)
-            logger.info("Weather refreshed for %d res-%d cells", len(result), RES_WEATHER)
+            self.ok = True
+            logger.info("Weather refreshed: %d/%d batches ok (%d res-%d cells)",
+                        n_ok, n_ok + n_fail, len(result), RES_WEATHER)
         else:
-            logger.warning("Weather refresh produced no data")
+            logger.warning("Weather refresh: all %d batches failed; keeping previous cache "
+                           "(%d cells, ok=%s)", n_fail, len(self.by_cell), self.ok)
 
     def for_cell(self, cell: str) -> dict:
         """Look up weather for any-resolution cell via its res-3 parent."""

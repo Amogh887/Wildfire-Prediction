@@ -154,7 +154,10 @@ class MLService:
         self.results = results
         self.updated_at = datetime.now(timezone.utc)
         logger.info("Inference complete for %d res-%d cells", len(results), RES_COARSE)
-        self.save_snapshot()
+        # only persist a snapshot built from real weather — never the startup
+        # default-weather pass (which would freeze the uniform 36% state to disk).
+        if weather_service.cache.ok:
+            self.save_snapshot()
 
     def save_snapshot(self):
         if not self.results:
