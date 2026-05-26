@@ -23,7 +23,7 @@ const GRID = [
 
 const COLORS = ["transparent", "#c42000", "#f04800", "#ff7c00", "#ffc800"];
 const COLS = 8;
-const PX = 3; // CSS pixels per flame pixel
+const PX = 2; // CSS pixels per flame pixel (half of original 3)
 
 export default function PixelFlame({ x, y, delay = 0 }: Props) {
   const w = COLS * PX;
@@ -36,6 +36,7 @@ export default function PixelFlame({ x, y, delay = 0 }: Props) {
         top: y - h,
         width: w,
         height: h,
+        gridTemplateColumns: `repeat(${COLS}, ${PX}px)`,
         animationDelay: `${delay}ms`,
       }}
     >

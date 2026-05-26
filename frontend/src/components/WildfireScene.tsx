@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DeckGL from "@deck.gl/react";
 import { MapView, WebMercatorViewport } from "@deck.gl/core";
 import type { PickingInfo, MapViewState } from "@deck.gl/core";
-import { GeoJsonLayer, ScatterplotLayer, TextLayer, PathLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { H3HexagonLayer } from "@deck.gl/geo-layers";
 import { MaskExtension } from "@deck.gl/extensions";
 import { cellToLatLng } from "h3-js";
@@ -28,7 +28,6 @@ const INITIAL_VIEW_STATE: MapViewState = {
 
 // ── Geographic annotation data ─────────────────────────────────────────
 interface GeoPoint { name: string; lon: number; lat: number }
-interface RiverLine { name: string; coords: [number, number][] }
 
 const CITIES: GeoPoint[] = [
   { name: "SYDNEY",    lon: 151.209, lat: -33.868 },
@@ -51,29 +50,6 @@ const SEAS: GeoPoint[] = [
   { name: "GREAT AUSTRALIAN BIGHT", lon: 126.0, lat: -34.5 },
 ];
 
-const RIVERS: RiverLine[] = [
-  {
-    name: "Murray",
-    coords: [
-      [148.2, -36.5], [146.92, -36.07], [143.55, -35.34],
-      [142.15, -34.18], [140.75, -34.17], [139.28, -35.22],
-    ],
-  },
-  {
-    name: "Darling",
-    coords: [
-      [145.94, -29.50], [145.72, -30.68],
-      [143.73, -31.95], [142.40, -32.40], [141.92, -34.10],
-    ],
-  },
-  {
-    name: "Murrumbidgee",
-    coords: [
-      [149.14, -35.47], [147.37, -35.12], [146.56, -34.75],
-      [144.50, -34.50], [143.53, -34.65], [143.02, -34.62],
-    ],
-  },
-];
 
 export default function WildfireScene({ hexData, boundary, onHover }: Props) {
   const [viewState, setViewState] = useState<MapViewState>(INITIAL_VIEW_STATE);
@@ -102,21 +78,30 @@ export default function WildfireScene({ hexData, boundary, onHover }: Props) {
   const flamePositions = useMemo(() => {
     const fireHexes = hexagons.filter((h) => h.active_fires > 0);
     if (!fireHexes.length) return [];
-    const vp = new WebMercatorViewport({
-      width: canvasSize.w,
-      height: canvasSize.h,
-      longitude: viewState.longitude,
-      latitude: viewState.latitude,
-      zoom: viewState.zoom,
-      pitch: viewState.pitch ?? 0,
-      bearing: viewState.bearing ?? 0,
-    });
-    return fireHexes.map((h) => {
-      const [lat, lng] = cellToLatLng(h.h3);
-      const [x, y] = vp.project([lng, lat]);
-      const delay = Math.round((x * 37 + y * 53) % 350);
-      return { h3: h.h3, x, y, delay };
-    });
+    try {
+      const vp = new WebMercatorViewport({
+        width: canvasSize.w,
+        height: canvasSize.h,
+        longitude: viewState.longitude,
+        latitude: viewState.latitude,
+        zoom: viewState.zoom,
+        pitch: viewState.pitch ?? 0,
+        bearing: viewState.bearing ?? 0,
+      });
+      return fireHexes.flatMap((h) => {
+        try {
+          const [lat, lng] = cellToLatLng(h.h3);
+          const [x, y] = vp.project([lng, lat]);
+          if (!isFinite(x) || !isFinite(y)) return [];
+          const delay = Math.round(((x * 37 + y * 53) % 350 + 350) % 350);
+          return [{ h3: h.h3, x, y, delay }];
+        } catch {
+          return [];
+        }
+      });
+    } catch {
+      return [];
+    }
   }, [hexagons, viewState, canvasSize]);
 
   const layers = useMemo(() => {
@@ -180,20 +165,6 @@ export default function WildfireScene({ hexData, boundary, onHover }: Props) {
       );
     }
 
-    // Rivers — thin blue-white lines.
-    result.push(
-      new PathLayer<RiverLine>({
-        id: "rivers",
-        data: RIVERS,
-        pickable: false,
-        getPath: (d) => d.coords as [number, number][],
-        getColor: [160, 200, 255, 65],
-        getWidth: 1,
-        widthUnits: "pixels",
-        widthMinPixels: 0.8,
-      })
-    );
-
     // City dots.
     result.push(
       new ScatterplotLayer<GeoPoint>({
@@ -236,7 +207,7 @@ export default function WildfireScene({ hexData, boundary, onHover }: Props) {
         getPosition: (d) => [d.lon, d.lat],
         getText: (d) => d.name,
         getSize: 11,
-        getColor: [170, 205, 255, 75],
+        getColor: [200, 230, 255, 170],
         getTextAnchor: "middle",
         getAlignmentBaseline: "center",
         fontFamily: "monospace",
