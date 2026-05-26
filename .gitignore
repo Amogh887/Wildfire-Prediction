@@ -4,7 +4,7 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/*.pyc
 backend/.env
-backend/data/wildfire_model.pkl
+backend/data/inference_snapshot.pkl
 
 # Node
 frontend/node_modules/
