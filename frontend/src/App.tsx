@@ -3,6 +3,7 @@ import "./App.css";
 import { useHexData } from "./hooks/useHexData";
 import WildfireScene from "./components/WildfireScene";
 import HoverCard from "./components/HoverCard";
+import SidePanel from "./components/SidePanel";
 import Legend from "./components/Legend";
 import Header from "./components/Header";
 import type { Hexagon } from "./types";
@@ -16,12 +17,18 @@ export default function App() {
     y: number;
   } | null>(null);
 
+  const [selectedHex, setSelectedHex] = useState<Hexagon | null>(null);
+
   const handleHover = useCallback(
     (hex: Hexagon | null, x: number, y: number) => {
       setHover(hex ? { hex, x, y } : null);
     },
     []
   );
+
+  const handleSelect = useCallback((hex: Hexagon | null) => {
+    setSelectedHex(hex);
+  }, []);
 
   return (
     <div className="app">
@@ -30,6 +37,7 @@ export default function App() {
         hexData={hexData}
         boundary={boundary}
         onHover={handleHover}
+        onSelect={handleSelect}
       />
 
       <Header
@@ -40,7 +48,11 @@ export default function App() {
 
       <Legend />
 
-      {hover && <HoverCard hex={hover.hex} x={hover.x} y={hover.y} />}
+      <SidePanel hex={selectedHex} onClose={() => setSelectedHex(null)} />
+
+      {hover && !selectedHex && (
+        <HoverCard hex={hover.hex} x={hover.x} y={hover.y} />
+      )}
 
       {conn === "connecting" && !hexData && (
         <div className="overlay-banner">
@@ -60,7 +72,7 @@ export default function App() {
       )}
 
       <div className="hint">
-        Scroll / pinch to zoom · drag to pan · hover a hex for details
+        Scroll / pinch to zoom · drag to pan · hover for quick view · click a hex for details
       </div>
     </div>
   );

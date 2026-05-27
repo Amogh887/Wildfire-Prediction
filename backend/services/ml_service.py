@@ -125,25 +125,26 @@ class MLService:
         else:
             base_probs = physics_probs
 
-        # Normalise so the lowest-risk cell = 0 and the range fills [0, 1].
-        # This guarantees geographic contrast regardless of the absolute scale of
-        # the physics/ML outputs (which vary by season and data availability).
+        raw_probs = list(base_probs)
+
         if base_probs:
             lo = min(base_probs)
             hi = max(base_probs)
             span = hi - lo
             if span > 0.02:
                 base_probs = [(p - lo) / span for p in base_probs]
+                base_probs = [0.0 if p < 0.05 else p for p in base_probs]
             else:
                 base_probs = [0.0] * len(base_probs)
 
         results = {}
-        for (c, feats, w), base in zip(meta, base_probs):
+        for (c, feats, w), base, raw in zip(meta, base_probs, raw_probs):
             prob = float(base)
             fires = firms_service.cache.fires_for_cell(c) + aus_fires_service.cache.fires_for_cell(c)
-            # live modifiers
             if w["temperature_max"] > 38 and w["humidity_min"] < 15 and w["wind_speed_max"] > 50:
-                prob *= 1.8
+                prob = min(prob * 1.8, 0.94 if fires == 0 else 1.0)
+            if fires == 0:
+                prob = min(prob, 0.94)
             if fires >= 2:
                 prob = max(prob, 0.9)
             elif fires == 1:
@@ -152,6 +153,7 @@ class MLService:
             lat, lon = grid.centroid(c)
             results[c] = {
                 "probability": round(prob, 4),
+                "raw_score": round(raw, 4),
                 "risk": risk_band(prob),
                 "temperature": round(w["temperature"], 1),
                 "humidity": round(w["humidity"], 0),

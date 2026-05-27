@@ -77,7 +77,12 @@ class HexGrid:
         cells: set[str] = set()
         for geom in polys:
             try:
-                cells.update(h3.geo_to_cells(geom, res))
+                filled = set(h3.geo_to_cells(geom, res))
+                cells.update(filled)
+                for c in filled:
+                    for nb in h3.grid_disk(c, 1):
+                        if nb not in filled:
+                            cells.add(nb)
             except Exception as e:
                 logger.warning("geo_to_cells failed for a polygon at res %d: %s", res, e)
         return sorted(cells)

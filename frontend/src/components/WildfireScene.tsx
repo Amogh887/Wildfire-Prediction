@@ -14,6 +14,7 @@ interface Props {
   hexData: HexResponse | null;
   boundary: BoundaryGeoJSON | null;
   onHover: (hex: Hexagon | null, x: number, y: number) => void;
+  onSelect: (hex: Hexagon | null) => void;
 }
 
 const INITIAL_VIEW_STATE: MapViewState = {
@@ -51,7 +52,7 @@ const SEAS: GeoPoint[] = [
 ];
 
 
-export default function WildfireScene({ hexData, boundary, onHover }: Props) {
+export default function WildfireScene({ hexData, boundary, onHover, onSelect }: Props) {
   const [viewState, setViewState] = useState<MapViewState>(INITIAL_VIEW_STATE);
   const [canvasSize, setCanvasSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -228,6 +229,14 @@ export default function WildfireScene({ hexData, boundary, onHover }: Props) {
     [onHover]
   );
 
+  const handleClick = useCallback(
+    (info: PickingInfo) => {
+      const obj = info.object as Hexagon | undefined;
+      onSelect(obj ?? null);
+    },
+    [onSelect]
+  );
+
   return (
     <div
       ref={containerRef}
@@ -240,6 +249,7 @@ export default function WildfireScene({ hexData, boundary, onHover }: Props) {
         controller={true}
         layers={layers}
         onHover={handleHover}
+        onClick={handleClick}
         style={{ position: "absolute", inset: "0" }}
       />
       {flamePositions.length > 0 && (

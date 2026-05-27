@@ -44,7 +44,7 @@ def status():
         "firms_updated": _iso(firms_service.cache.updated_at),
         "weather_updated": _iso(weather_service.cache.updated_at),
         "model_loaded": ml.loaded,
-        "alert_count": sum(1 for r in ml.results.values() if r["probability"] >= 0.6),
+        "alert_count": sum(1 for r in ml.results.values() if r.get("raw_score", 0) > 0.55 or r["active_fires"] > 0),
         "hex_count": len(ml.results),
     }
 
@@ -53,7 +53,7 @@ def status():
 def alerts():
     out = []
     for cell, r in ml.results.items():
-        if r["probability"] >= 0.6:
+        if r.get("raw_score", 0) > 0.55 or r["active_fires"] > 0:
             out.append({
                 "h3": cell,
                 "lat": r["lat"],
