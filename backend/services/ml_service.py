@@ -118,14 +118,24 @@ class MLService:
                 import pandas as pd
                 X = pd.DataFrame(rows, columns=self.features)
                 ml_probs = self.model.predict_proba(X)[:, 1]
-                # take the higher of ML and physics so current weather always drives
-                # a visible geographic gradient even when the seasonal ML signal is weak
                 base_probs = [max(float(ml), phys) for ml, phys in zip(ml_probs, physics_probs)]
             except Exception as e:
                 logger.warning("predict failed (%s); physics fallback", e)
                 base_probs = physics_probs
         else:
             base_probs = physics_probs
+
+        # Normalise so the lowest-risk cell = 0 and the range fills [0, 1].
+        # This guarantees geographic contrast regardless of the absolute scale of
+        # the physics/ML outputs (which vary by season and data availability).
+        if base_probs:
+            lo = min(base_probs)
+            hi = max(base_probs)
+            span = hi - lo
+            if span > 0.02:
+                base_probs = [(p - lo) / span for p in base_probs]
+            else:
+                base_probs = [0.0] * len(base_probs)
 
         results = {}
         for (c, feats, w), base in zip(meta, base_probs):
@@ -154,8 +164,6 @@ class MLService:
         self.results = results
         self.updated_at = datetime.now(timezone.utc)
         logger.info("Inference complete for %d res-%d cells", len(results), RES_COARSE)
-        # only persist a snapshot built from real weather — never the startup
-        # default-weather pass (which would freeze the uniform 36% state to disk).
         if weather_service.cache.ok:
             self.save_snapshot()
 
