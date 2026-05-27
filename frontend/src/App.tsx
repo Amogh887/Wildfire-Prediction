@@ -9,7 +9,7 @@ import Header from "./components/Header";
 import type { Hexagon } from "./types";
 
 export default function App() {
-  const { hexData, status, boundary, conn, errorMsg } = useHexData(4);
+  const { hexData, status, boundary, conn, errorMsg } = useHexData(3);
 
   const [hover, setHover] = useState<{
     hex: Hexagon;
@@ -50,9 +50,7 @@ export default function App() {
 
       <SidePanel hex={selectedHex} onClose={() => setSelectedHex(null)} />
 
-      {hover && !selectedHex && (
-        <HoverCard hex={hover.hex} x={hover.x} y={hover.y} />
-      )}
+      {hover && <HoverCard hex={hover.hex} x={hover.x} y={hover.y} />}
 
       {conn === "connecting" && !hexData && (
         <div className="overlay-banner">

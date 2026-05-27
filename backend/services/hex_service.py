@@ -8,9 +8,8 @@ import h3
 logger = logging.getLogger("hex_service")
 
 # Resolution constants (tunable)
-RES_COARSE = 4   # ML inference + live-weather granularity (a few thousand cells)
-RES_FINE = 5     # the single fixed display resolution (~252 km²/hex, ~30k cells);
-                 # fine cells inherit their res-4 parent's risk/weather values
+RES_COARSE = 3   # ML inference + live-weather granularity (~620 cells, ~12k km²/hex)
+RES_FINE = 4     # zoomed display resolution (~1770 km²/hex, ~4500 cells)
 RES_WEATHER = 2  # weather fetched at this resolution; finer hexes map to res-2 parent
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -77,12 +76,7 @@ class HexGrid:
         cells: set[str] = set()
         for geom in polys:
             try:
-                filled = set(h3.geo_to_cells(geom, res))
-                cells.update(filled)
-                for c in filled:
-                    for nb in h3.grid_disk(c, 1):
-                        if nb not in filled:
-                            cells.add(nb)
+                cells.update(h3.geo_to_cells(geom, res))
             except Exception as e:
                 logger.warning("geo_to_cells failed for a polygon at res %d: %s", res, e)
         return sorted(cells)

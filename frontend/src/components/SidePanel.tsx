@@ -84,7 +84,10 @@ export default function SidePanel({ hex, onClose }: Props) {
   const state = hex ? stateAbbr(hex.lat, hex.lon) : "NSW";
   const fireLinks = STATE_FIRE_LINKS[state] ?? STATE_FIRE_LINKS["NSW"];
   const regionDisplay = hex?.region ?? (hex ? `${hex.lat.toFixed(2)}, ${hex.lon.toFixed(2)}` : "");
-  const showVerify = hex && (hex.active_fires > 0 || hex.probability >= 0.7);
+  const mapsUrl = hex
+    ? `https://www.google.com/maps/@${hex.lat},${hex.lon},10z`
+    : null;
+  const showFireLinks = hex && (hex.active_fires > 0 || hex.probability >= 0.7);
 
   return (
     <div className={`side-panel${open ? " side-panel--open" : ""}`}>
@@ -143,30 +146,41 @@ export default function SidePanel({ hex, onClose }: Props) {
             </span>
           </div>
 
-          {showVerify && (
-            <div className="sp-verify">
-              <div className="sp-section-label">VERIFY SOURCES</div>
-              <a
-                className="sp-link"
-                href="https://www.abc.net.au/emergency/"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                ABC Emergency ↗
-              </a>
-              {fireLinks.map((l) => (
+          <div className="sp-verify">
+            <div className="sp-section-label">LOCATION</div>
+            <a
+              className="sp-link sp-link--primary"
+              href={mapsUrl!}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View exact location on Google Maps ↗
+            </a>
+            {showFireLinks && (
+              <>
+                <div className="sp-section-label" style={{ marginTop: 8 }}>FIRE AUTHORITIES</div>
                 <a
-                  key={l.url}
                   className="sp-link"
-                  href={l.url}
+                  href="https://www.abc.net.au/emergency/"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  {l.label} ↗
+                  ABC Emergency ↗
                 </a>
-              ))}
-            </div>
-          )}
+                {fireLinks.map((l) => (
+                  <a
+                    key={l.url}
+                    className="sp-link"
+                    href={l.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {l.label} ↗
+                  </a>
+                ))}
+              </>
+            )}
+          </div>
         </>
       )}
     </div>
